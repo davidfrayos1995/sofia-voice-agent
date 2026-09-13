@@ -1,0 +1,20 @@
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /Users/davidfray/Documents/sofia                                             │
+│ test/venv/lib/python3.9/site-packages/modal/cli/import_refs.py:98 in         │
+│ import_file_or_module                                                        │
+│                                                                              │
+│    97 │   │   │   assert spec.loader                                         │
+│ ❱  98 │   │   │   spec.loader.exec_module(module)                            │
+│    99 │   │   except Exception as exc:                                       │
+│ <frozen importlib._bootstrap_external>:850 in exec_module                    │
+│                                                                              │
+│ <frozen importlib._bootstrap>:228 in _call_with_frames_removed               │
+│                                                                              │
+│                                                                              │
+│ /Users/davidfray/Documents/sofia test/modal_app.py:106 in <module>           │
+│                                                                              │
+│   105 # Mountear la FastAPI app en Modal                                     │
+│ ❱ 106 @app.asgi(secret=[                                                     │
+│   107 │   Secret.from_name("ANTHROPIC_API_KEY"),                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+AttributeError: 'App' object has no attribute 'asgi'

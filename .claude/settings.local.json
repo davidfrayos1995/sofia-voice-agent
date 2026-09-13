@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/Users/davidfray/Documents/sofia\\ test"
+    ],
+    "allow": [
+      "Bash(python create_notion_crm.py)"
+    ]
+  }
+}

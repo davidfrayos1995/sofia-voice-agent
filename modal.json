@@ -1,0 +1,17 @@
+{
+  "app_name": "sofia-voice-agent",
+  "workspace": "davidfrayos1995",
+  "secrets": {
+    "ANTHROPIC_API_KEY": "sk-ant-xxxxxxxxxxxxx-your-anthropic-key-here",
+    "NOTION_API_KEY": "ntn_xxxxxxxxxxxxx-your-notion-key-here",
+    "NOTION_DATABASE_ID_PROPIEDADES": "your-database-id-here",
+    "NOTION_DATABASE_ID_LEADS": "your-database-id-here",
+    "NOTION_DATABASE_ID_LLAMADAS": "your-database-id-here",
+    "NOTION_DATABASE_ID_CITAS": "your-database-id-here",
+    "RETELL_API_KEY": "key_xxxxxxxxxxxxx-your-retell-key-here",
+    "TWILIO_ACCOUNT_SID": "ACxxxxxxxxxxxxx-your-twilio-sid-here",
+    "TWILIO_AUTH_TOKEN": "your-twilio-auth-token-here",
+    "TWILIO_PHONE_NUMBER": "your-twilio-phone-number-here",
+    "CALCOM_API_KEY": "cal_live_xxxxxxxxxxxxx-your-calcom-key-here"
+  }
+}
