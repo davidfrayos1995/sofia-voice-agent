@@ -3,11 +3,13 @@ import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
+from src.integrations.notion_service import NotionService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Sofia - Agente de Voz IA")
+notion = NotionService()
 
 # Health check para Railway
 @app.get("/health")
@@ -86,6 +88,140 @@ async def schedule_meeting(contact_name: str, contact_email: str, preferred_time
     except Exception as e:
         logger.error(f"Error scheduling meeting: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+
+# Endpoints para funciones custom de Retell
+@app.post("/functions/search_properties")
+async def search_properties(request: Request):
+    """
+    Busca propiedades en Notion según criterios.
+    Llamada por Sofia durante la conversación.
+    """
+    try:
+        body = await request.json()
+        criteria = body.get("args", {})
+
+        logger.info(f"Search properties with criteria: {criteria}")
+
+        properties = notion.search_properties(criteria)
+
+        return {
+            "properties": properties,
+            "total": len(properties),
+            "message": f"Se encontraron {len(properties)} propiedades que coinciden con tus criterios."
+        }
+    except Exception as e:
+        logger.error(f"Error searching properties: {str(e)}")
+        return {
+            "properties": [],
+            "total": 0,
+            "error": str(e)
+        }
+
+@app.post("/functions/get_property_details")
+async def get_property_details(request: Request):
+    """
+    Obtiene detalles completos de una propiedad.
+    """
+    try:
+        body = await request.json()
+        property_id = body.get("args", {}).get("property_id")
+
+        logger.info(f"Get property details for: {property_id}")
+
+        if not property_id:
+            return {"error": "property_id is required"}
+
+        details = notion.get_property_details(property_id)
+
+        if not details:
+            return {"error": f"Property {property_id} not found"}
+
+        return details
+
+    except Exception as e:
+        logger.error(f"Error getting property details: {str(e)}")
+        return {"error": str(e)}
+
+@app.post("/functions/register_lead")
+async def register_lead(request: Request):
+    """
+    Registra un lead en Notion con información del cliente.
+    """
+    try:
+        body = await request.json()
+        args = body.get("args", {})
+
+        lead_data = {
+            "name": args.get("name"),
+            "phone": args.get("phone"),
+            "email": args.get("email"),
+            "interested_properties": args.get("interested_properties", []),
+            "budget": args.get("budget")
+        }
+
+        logger.info(f"Registering lead: {lead_data['name']}")
+
+        lead_id = notion.register_lead(lead_data)
+
+        if lead_id:
+            return {
+                "status": "registered",
+                "lead_id": lead_id,
+                "message": f"Lead {lead_data['name']} registrado exitosamente en Notion"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Error al registrar el lead en Notion"
+            }
+
+    except Exception as e:
+        logger.error(f"Error registering lead: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/functions/schedule_visit")
+async def schedule_visit(request: Request):
+    """
+    Agenda una visita a una propiedad.
+    """
+    try:
+        body = await request.json()
+        args = body.get("args", {})
+
+        visit_data = {
+            "property_id": args.get("property_id"),
+            "client_name": args.get("client_name"),
+            "client_email": args.get("client_email"),
+            "client_phone": args.get("client_phone"),
+            "preferred_date": args.get("preferred_date"),
+            "preferred_time": args.get("preferred_time")
+        }
+
+        logger.info(f"Scheduling visit for {visit_data['client_name']}")
+
+        visit_id = notion.schedule_visit(visit_data)
+
+        if visit_id:
+            return {
+                "status": "scheduled",
+                "visit_id": visit_id,
+                "confirmation_message": f"Visita a la propiedad agendada para {visit_data['preferred_date']} a las {visit_data['preferred_time']}. Te enviaremos la confirmación al correo {visit_data['client_email']}"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Error al agendar la visita en Notion"
+            }
+
+    except Exception as e:
+        logger.error(f"Error scheduling visit: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
