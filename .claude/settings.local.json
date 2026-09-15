@@ -1,10 +1,20 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(python create_notion_crm.py)",
+      "Bash(curl -s \"https://api.retellai.com/docs\")",
+      "WebSearch",
+      "WebFetch(domain:docs.retellai.com)",
+      "WebFetch(domain:www.sacesta.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(git add *)",
+      "Bash(git reset *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(curl -s https://web-production-f9e22.up.railway.app/health)"
+    ],
     "additionalDirectories": [
       "/Users/davidfray/Documents/sofia\\ test"
-    ],
-    "allow": [
-      "Bash(python create_notion_crm.py)"
     ]
   }
 }
