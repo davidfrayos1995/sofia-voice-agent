@@ -17,7 +17,7 @@ def generate_call_summary(transcript: str) -> str:
         client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
-            model="claude-opus-4-1-20250805",
+            model="claude-3-sonnet-20240229",
             max_tokens=1024,
             messages=[
                 {
@@ -56,7 +56,7 @@ def extract_call_metadata(transcript: str) -> dict:
         client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
-            model="claude-opus-4-1-20250805",
+            model="claude-3-sonnet-20240229",
             max_tokens=256,
             messages=[
                 {
