@@ -8,12 +8,6 @@ from anthropic import Anthropic
 def generate_call_summary(transcript: str) -> str:
     """
     Genera un resumen de la llamada usando Claude.
-    
-    Args:
-        transcript: Texto completo de la transcripción de la llamada
-        
-    Returns:
-        Resumen generado por Claude
     """
     try:
         api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -23,7 +17,7 @@ def generate_call_summary(transcript: str) -> str:
         client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-1-20250805",
             max_tokens=1024,
             messages=[
                 {
@@ -62,7 +56,7 @@ def extract_call_metadata(transcript: str) -> dict:
         client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-1-20250805",
             max_tokens=256,
             messages=[
                 {
