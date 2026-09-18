@@ -20,7 +20,7 @@ def generate_call_summary(transcript: str) -> str:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY no configurada")
         
-        client = Anthropic()
+        client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
             model="claude-3-5-sonnet-20241022",
@@ -59,7 +59,7 @@ def extract_call_metadata(transcript: str) -> dict:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY no configurada")
         
-        client = Anthropic()
+        client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
             model="claude-3-5-sonnet-20241022",
