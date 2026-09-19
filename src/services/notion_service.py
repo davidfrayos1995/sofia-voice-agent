@@ -125,6 +125,7 @@ def create_or_update_lead(
         query_payload = {
             "filter": {
                 "property": "Teléfono",
+                "type": "phone_number",
                 "phone_number": {
                     "equals": phone_number
                 }
