@@ -201,7 +201,7 @@ def create_or_update_lead(
             create_payload = {
                 "parent": {"database_id": db_id},
                 "properties": {
-                    "Nombre": {"title": [{"text": {"content": name}}]},
+                    "Name": {"title": [{"text": {"content": name}}]},
                     "Teléfono": {"phone_number": phone_number},
                     "Temperatura": {"select": {"name": temperatura}},
                     "Estatus": {"select": {"name": estatus}},
