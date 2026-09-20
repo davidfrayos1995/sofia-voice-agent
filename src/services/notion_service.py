@@ -109,7 +109,9 @@ def create_or_update_lead(
     estatus: str = "Pendiente de llamar"
 ) -> dict:
     """
-    Crea o actualiza un lead en Notion
+    Crea o actualiza un lead en Notion.
+    Si estatus es None, no se modifica el campo Estatus (usado en llamadas outbound
+    donde el estatus ya fue actualizado por mark_lead_status durante la llamada).
     """
     try:
         db_id = os.getenv("NOTION_DATABASE_ID_LEADS")
@@ -163,10 +165,11 @@ def create_or_update_lead(
                 "properties": {
                     "Última Interacción": {"date": {"start": datetime.now().isoformat()}},
                     "Resumen Llamada": {"rich_text": [{"text": {"content": resumen_llamada[:2000]}}]},
-                    "Estatus": {"select": {"name": estatus}},
                     "Temperatura": {"select": {"name": temperatura}},
                 }
             }
+            if estatus is not None:
+                update_payload["properties"]["Estatus"] = {"select": {"name": estatus}}
             logger.info(f"\nUPDATE PAYLOAD:")
             logger.info(json.dumps(update_payload, indent=2, default=str))
 
@@ -204,7 +207,7 @@ def create_or_update_lead(
                     "Name": {"title": [{"text": {"content": name}}]},
                     "Teléfono": {"phone_number": phone_number},
                     "Temperatura": {"select": {"name": temperatura}},
-                    "Estatus": {"select": {"name": estatus}},
+                    "Estatus": {"select": {"name": estatus or "Pendiente de llamar"}},
                     "Resumen Llamada": {"rich_text": [{"text": {"content": resumen_llamada[:2000]}}]},
                     "Fecha Primer Contacto": {"date": {"start": datetime.now().isoformat()}},
                 }
@@ -391,4 +394,115 @@ def search_properties(
             "success": False,
             "error": str(e)
         }
+
+def get_pending_leads() -> dict:
+    """
+    Obtiene todos los leads con estatus "Pendiente de llamar" de la base de datos de Leads
+    """
+    try:
+        db_id = os.getenv("NOTION_DATABASE_ID_LEADS")
+        if not db_id:
+            raise ValueError("NOTION_DATABASE_ID_LEADS no configurada")
+
+        query_payload = {
+            "filter": {
+                "property": "Estatus",
+                "select": {
+                    "equals": "Pendiente de llamar"
+                }
+            }
+        }
+
+        logger.info("🔍 Consultando leads con estatus 'Pendiente de llamar'")
+
+        response = requests.post(
+            f"{NOTION_API_URL}/databases/{db_id}/query",
+            headers=get_notion_headers(),
+            json=query_payload
+        )
+
+        if response.status_code != 200:
+            logger.error(f"❌ Error consultando leads pendientes: {response.status_code} - {response.text}")
+            return {"success": False, "error": response.text}
+
+        results = response.json().get("results", [])
+        leads = []
+        for page in results:
+            props = page["properties"]
+            name_title = props.get("Name", {}).get("title", [])
+            resumen_rt = props.get("Resumen Llamada", {}).get("rich_text", [])
+            leads.append({
+                "page_id": page["id"],
+                "nombre": name_title[0]["text"]["content"] if name_title else "Desconocido",
+                "telefono": props.get("Teléfono", {}).get("phone_number", ""),
+                "temperatura": (props.get("Temperatura", {}).get("select") or {}).get("name", ""),
+                "resumen_llamada": resumen_rt[0]["text"]["content"] if resumen_rt else ""
+            })
+
+        logger.info(f"✅ {len(leads)} leads pendientes encontrados")
+        return {"success": True, "leads": leads}
+    except Exception as e:
+        logger.error(f"❌ Error en get_pending_leads: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+def update_lead_status_by_id(page_id: str, status: str) -> dict:
+    """
+    Actualiza únicamente el estatus de un lead por su page_id (rápido, sin query)
+    """
+    try:
+        payload = {
+            "properties": {
+                "Estatus": {"select": {"name": status}},
+                "Última Interacción": {"date": {"start": datetime.now().isoformat()}}
+            }
+        }
+
+        response = requests.patch(
+            f"{NOTION_API_URL}/pages/{page_id}",
+            headers=get_notion_headers(),
+            json=payload
+        )
+
+        if response.status_code != 200:
+            logger.error(f"❌ Error actualizando estatus de lead {page_id}: {response.text}")
+            return {"success": False, "error": response.text}
+
+        logger.info(f"✅ Lead {page_id} actualizado a estatus '{status}'")
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"❌ Error en update_lead_status_by_id: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+def update_lead_status_by_phone(phone_number: str, status: str) -> dict:
+    """
+    Busca un lead por teléfono y actualiza su estatus (usado por la función de Retell durante la llamada)
+    """
+    try:
+        db_id = os.getenv("NOTION_DATABASE_ID_LEADS")
+        if not db_id:
+            raise ValueError("NOTION_DATABASE_ID_LEADS no configurada")
+
+        query_payload = {
+            "filter": {
+                "property": "Teléfono",
+                "type": "phone_number",
+                "phone_number": {"equals": phone_number}
+            }
+        }
+
+        response = requests.post(
+            f"{NOTION_API_URL}/databases/{db_id}/query",
+            headers=get_notion_headers(),
+            json=query_payload
+        )
+
+        if response.status_code != 200 or not response.json().get("results"):
+            logger.error(f"❌ No se encontró lead con teléfono {phone_number}")
+            return {"success": False, "error": "Lead no encontrado"}
+
+        page_id = response.json()["results"][0]["id"]
+        return update_lead_status_by_id(page_id, status)
+    except Exception as e:
+        logger.error(f"❌ Error en update_lead_status_by_phone: {str(e)}")
+        return {"success": False, "error": str(e)}
 
