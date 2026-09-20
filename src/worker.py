@@ -13,13 +13,24 @@ from services.retell_service import trigger_outbound_call
 logger = logging.getLogger(__name__)
 
 SECONDS_BETWEEN_CALLS = int(os.getenv("OUTBOUND_CALL_DELAY_SECONDS", "30"))
+MAX_CALLS_PER_RUN = int(os.getenv("OUTBOUND_MAX_CALLS_PER_RUN", "999"))  # sin límite por defecto
+DRY_RUN_MODE = os.getenv("OUTBOUND_DRY_RUN_MODE", "false").lower() == "true"
 
 def process_pending_leads():
     """
     Job principal del worker. Se ejecuta cada hora (o manualmente).
+
+    Variables de entorno:
+    - OUTBOUND_MAX_CALLS_PER_RUN: máximo de llamadas a disparar por ejecución (default: ilimitado)
+    - OUTBOUND_DRY_RUN_MODE: si es 'true', simula las llamadas sin dispararlas (default: false)
+    - OUTBOUND_CALL_DELAY_SECONDS: segundos de espera entre llamadas (default: 30)
     """
     logger.info("=" * 80)
     logger.info("🔄 WORKER INICIADO - Revisando leads pendientes de llamar")
+    if DRY_RUN_MODE:
+        logger.info("⚠️  MODO DRY-RUN ACTIVO: Las llamadas se simularán sin dispararse")
+    if MAX_CALLS_PER_RUN < 999:
+        logger.info(f"📊 Límite: máximo {MAX_CALLS_PER_RUN} llamadas por ejecución")
     logger.info("=" * 80)
 
     result = get_pending_leads()
@@ -35,11 +46,16 @@ def process_pending_leads():
         logger.info("✅ No hay leads pendientes. Worker termina sin acción.")
         return {"success": True, "processed": 0, "calls_triggered": 0}
 
+    # Aplicar límite de llamadas por ejecución
+    leads_to_process = leads[:MAX_CALLS_PER_RUN]
+    if len(leads) > MAX_CALLS_PER_RUN:
+        logger.info(f"📊 Límite alcanzado: procesando {MAX_CALLS_PER_RUN} de {len(leads)} leads")
+
     calls_triggered = 0
     calls_failed = 0
     skipped_no_phone = 0
 
-    for i, lead in enumerate(leads, 1):
+    for i, lead in enumerate(leads_to_process, 1):
         nombre = lead.get("nombre", "Desconocido")
         telefono = lead.get("telefono", "")
         page_id = lead.get("page_id")
@@ -62,25 +78,30 @@ def process_pending_leads():
 
         logger.info(f"✅ Lead {nombre} marcado como 'En proceso' (evita doble llamada)")
 
-        # 2. Disparar la llamada outbound
-        logger.info(f"📞 Llamando a {nombre} ({telefono})...")
-        call_result = trigger_outbound_call(
-            to_number=telefono,
-            lead_name=nombre,
-            zona_interes=lead.get("zona_interes", "la zona que consultó"),
-            resumen_anterior=lead.get("resumen_llamada", ""),
-            lead_page_id=page_id
-        )
-
-        if call_result.get("success"):
-            logger.info(f"✅ Llamada disparada exitosamente a {nombre} (call_id: {call_result.get('call_id')})")
+        # 2. Disparar la llamada outbound (o simularla si está en dry-run)
+        if DRY_RUN_MODE:
+            logger.info(f"🎬 [DRY-RUN] Llamaría a {nombre} ({telefono}) - SIN DISPARAR REAL")
+            call_result = {"success": True, "call_id": "dry_run_simulated"}
             calls_triggered += 1
         else:
-            logger.error(f"❌ Falló la llamada a {nombre}: {call_result.get('error')}")
-            calls_failed += 1
-            # Revertir estatus para reintentar en la siguiente corrida
-            update_lead_status_by_id(page_id, "Pendiente de llamar")
-            logger.info(f"↩️  Lead {nombre} revertido a 'Pendiente de llamar' para reintentar después")
+            logger.info(f"📞 Llamando a {nombre} ({telefono})...")
+            call_result = trigger_outbound_call(
+                to_number=telefono,
+                lead_name=nombre,
+                zona_interes=lead.get("zona_interes", "la zona que consultó"),
+                resumen_anterior=lead.get("resumen_llamada", ""),
+                lead_page_id=page_id
+            )
+
+            if call_result.get("success"):
+                logger.info(f"✅ Llamada disparada exitosamente a {nombre} (call_id: {call_result.get('call_id')})")
+                calls_triggered += 1
+            else:
+                logger.error(f"❌ Falló la llamada a {nombre}: {call_result.get('error')}")
+                calls_failed += 1
+                # Revertir estatus para reintentar en la siguiente corrida
+                update_lead_status_by_id(page_id, "Pendiente de llamar")
+                logger.info(f"↩️  Lead {nombre} revertido a 'Pendiente de llamar' para reintentar después")
 
         # 3. Esperar antes de la siguiente llamada (excepto en la última)
         if i < len(leads):

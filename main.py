@@ -32,15 +32,22 @@ scheduler = BackgroundScheduler()
 
 @app.on_event("startup")
 def start_scheduler():
-    scheduler.add_job(
-        process_pending_leads,
-        "interval",
-        hours=1,
-        id="outbound_leads_worker",
-        replace_existing=True,
-    )
-    scheduler.start()
-    logger.info("🕐 Scheduler iniciado: worker de leads outbound correrá cada hora")
+    enable_scheduler = os.getenv("ENABLE_OUTBOUND_SCHEDULER", "false").lower() == "true"
+
+    if enable_scheduler:
+        scheduler.add_job(
+            process_pending_leads,
+            "interval",
+            hours=1,
+            id="outbound_leads_worker",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info("🕐 ✅ Scheduler ACTIVADO: worker de leads outbound correrá cada hora")
+    else:
+        scheduler.start()  # inicia pero sin jobs, solo para shutdown limpio
+        logger.info("🕐 ⏸️  Scheduler desactivado (ENABLE_OUTBOUND_SCHEDULER=false). "
+                   "Usa POST /api/worker/trigger-outbound para disparar manualmente.")
 
 @app.on_event("shutdown")
 def stop_scheduler():

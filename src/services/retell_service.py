@@ -126,7 +126,7 @@ def get_or_create_outbound_llm() -> dict:
         logger.error(f"❌ Error en get_or_create_outbound_llm: {str(e)}")
         return {"success": False, "error": str(e)}
 
-def create_outbound_agent(llm_id: str, voice_id: str = "11labs-Sofia") -> dict:
+def create_outbound_agent(llm_id: str, voice_id: str = "retell-Cimo") -> dict:
     """
     Crea el agente outbound en Retell asociado al LLM.
     """
@@ -135,7 +135,7 @@ def create_outbound_agent(llm_id: str, voice_id: str = "11labs-Sofia") -> dict:
             "response_engine": {"type": "retell-llm", "llm_id": llm_id},
             "voice_id": voice_id,
             "agent_name": "Sofia - Outbound",
-            "language": "es-MX",
+            "language": "es-419",
         }
 
         logger.info("🤖 Creando agente outbound en Retell...")
