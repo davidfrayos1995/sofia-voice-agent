@@ -1,5 +1,5 @@
 """
-Servicio Notion para guardar información de llamadas y leads
+Servicio Notion para guardar información de llamadas, leads y buscar propiedades
 """
 
 import os
@@ -240,6 +240,149 @@ def create_or_update_lead(
     except Exception as e:
         logger.error("=" * 80)
         logger.error("❌ EXCEPTION EN create_or_update_lead")
+        logger.error("=" * 80)
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("=" * 80)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def search_properties(
+    ubicacion_filter: str = None,
+    precio_max: int = None,
+    precio_min: int = None,
+    recamaras_min: int = None,
+    disponible_only: bool = True
+) -> dict:
+    """
+    Busca propiedades en Notion según criterios
+
+    Args:
+        ubicacion_filter: Texto para buscar en ubicación (zona)
+        precio_max: Precio máximo mensual
+        precio_min: Precio mínimo mensual
+        recamaras_min: Número mínimo de recámaras
+        disponible_only: Si solo buscar propiedades disponibles
+    """
+    try:
+        db_id = os.getenv("NOTION_DATABASE_ID_PROPIEDADES")
+
+        if not db_id:
+            raise ValueError("NOTION_DATABASE_ID_PROPIEDADES no configurada")
+
+        logger.info("=" * 80)
+        logger.info("🔍 BUSCANDO PROPIEDADES EN NOTION")
+        logger.info("=" * 80)
+        logger.info(f"Ubicación: {ubicacion_filter or 'sin filtro'}")
+        precio_min_str = f"${precio_min:,}" if precio_min else "$0"
+        precio_max_str = f"${precio_max:,}" if precio_max else "sin límite"
+        logger.info(f"Precio: {precio_min_str} - {precio_max_str}")
+        logger.info(f"Recámaras mínimas: {recamaras_min or 'sin filtro'}")
+        logger.info(f"Solo disponibles: {disponible_only}")
+
+        filters = []
+
+        if disponible_only:
+            filters.append({
+                "property": "Disponible",
+                "select": {
+                    "equals": "Sí"
+                }
+            })
+
+        if precio_max:
+            filters.append({
+                "property": "Precio Mensual",
+                "number": {
+                    "less_than_or_equal_to": precio_max
+                }
+            })
+
+        if precio_min:
+            filters.append({
+                "property": "Precio Mensual",
+                "number": {
+                    "greater_than_or_equal_to": precio_min
+                }
+            })
+
+        if recamaras_min:
+            filters.append({
+                "property": "Recámaras",
+                "number": {
+                    "greater_than_or_equal_to": recamaras_min
+                }
+            })
+
+        query_payload = {}
+        if filters:
+            if len(filters) == 1:
+                query_payload["filter"] = filters[0]
+            else:
+                query_payload["filter"] = {
+                    "and": filters
+                }
+
+        logger.info(f"\nQuery payload: {json.dumps(query_payload, indent=2)}")
+
+        response = requests.post(
+            f"{NOTION_API_URL}/databases/{db_id}/query",
+            headers=get_notion_headers(),
+            json=query_payload
+        )
+
+        logger.info(f"Status Code: {response.status_code}")
+
+        if response.status_code != 200:
+            logger.error(f"❌ Error en búsqueda: {response.status_code}")
+            logger.error(response.text)
+            return {
+                "success": False,
+                "error": f"HTTP {response.status_code}"
+            }
+
+        results = response.json().get("results", [])
+        propiedades = []
+
+        for page in results:
+            props = page["properties"]
+            prop_data = {
+                "id": page["id"],
+                "nombre": props.get("Name", {}).get("title", [{}])[0].get("text", {}).get("content", ""),
+                "ubicacion": props.get("Ubicación", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
+                "precio": props.get("Precio Mensual", {}).get("number"),
+                "recamaras": props.get("Recámaras", {}).get("number"),
+                "banos": props.get("Baños", {}).get("number"),
+                "m2": props.get("m²", {}).get("number"),
+                "disponible": props.get("Disponible", {}).get("select", {}).get("name", ""),
+                "descripcion": props.get("Descripción", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "")
+            }
+            propiedades.append(prop_data)
+
+        # Filtro adicional en memoria para ubicación (búsqueda por texto)
+        if ubicacion_filter:
+            ubicacion_lower = ubicacion_filter.lower()
+            propiedades = [
+                p for p in propiedades
+                if ubicacion_lower in p.get("ubicacion", "").lower() or
+                   ubicacion_lower in p.get("nombre", "").lower()
+            ]
+
+        logger.info(f"\n✅ Encontradas {len(propiedades)} propiedades")
+        for prop in propiedades:
+            precio = prop.get('precio') or 0
+            logger.info(f"  • {prop['nombre']} - ${precio:,} - {prop['ubicacion']}")
+
+        return {
+            "success": True,
+            "count": len(propiedades),
+            "propiedades": propiedades
+        }
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error("❌ EXCEPTION EN search_properties")
         logger.error("=" * 80)
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
