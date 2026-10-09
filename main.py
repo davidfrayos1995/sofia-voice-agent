@@ -5,7 +5,8 @@ Agente de voz IA para inmobiliaria con Retell AI
 
 import os
 import logging
-from fastapi import FastAPI, Request, HTTPException
+import threading
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from datetime import datetime
 import sys
@@ -16,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from services.anthropic_service import generate_call_summary, extract_call_metadata
 from services.notion_service import (
+    call_record_exists,
     create_call_record,
     create_or_update_lead,
     search_properties,
@@ -63,92 +65,106 @@ async def health():
     }
 
 # Webhook de Retell AI
+lead_lock = threading.Lock()
+
+def _es_outbound(call: dict) -> bool:
+    return call.get("direction") == "outbound"
+
+def _telefono_del_lead(call: dict) -> str:
+    return (call.get("to_number") if _es_outbound(call) else call.get("from_number")) or ""
+
+def procesar_call_ended(call: dict):
+    call_id = call.get("call_id")
+    phone_number = _telefono_del_lead(call)
+    outbound = _es_outbound(call)
+
+    if not phone_number:
+        logger.warning(f"⚠️ call_ended {call_id} sin teléfono, se omite")
+        return
+
+    try:
+        if call_record_exists(call_id):
+            logger.info(f"⏭️ call_ended {call_id} ya procesado, se omite")
+            return
+
+        transcript = call.get("transcript") or "Sin transcripción disponible"
+        summary = generate_call_summary(transcript)
+        metadata = extract_call_metadata(transcript)
+
+        create_call_record(
+            phone_number=phone_number,
+            transcript=transcript,
+            summary=summary,
+            call_id=call_id,
+            duration_minutes=round((call.get("duration_ms") or 0) / 60000, 2),
+            call_type="Saliente" if outbound else "Entrante",
+        )
+
+        with lead_lock:
+            create_or_update_lead(
+                phone_number=phone_number,
+                name=metadata.get("nombre") or None,
+                temperatura=metadata.get("interes"),
+                resumen_llamada=summary,
+                estatus=None if outbound else "En proceso",
+                call_id=call_id,
+            )
+        logger.info(f"✅ call_ended procesado: {call_id}")
+    except Exception:
+        logger.exception(f"❌ Error procesando call_ended {call_id}")
+
+def procesar_call_analyzed(call: dict):
+    call_id = call.get("call_id")
+    phone_number = _telefono_del_lead(call)
+    if not phone_number:
+        logger.warning(f"⚠️ call_analyzed {call_id} sin teléfono, se omite")
+        return
+
+    analysis = (call.get("call_analysis") or {}).get("custom_analysis_data") or {}
+    datos = {
+        "correo": analysis.get("correo"),
+        "zona": analysis.get("zona"),
+        "presupuesto": analysis.get("presupuesto"),
+        "recamaras": analysis.get("recamaras"),
+        "tipo_operacion": analysis.get("tipo_operacion"),
+    }
+
+    try:
+        with lead_lock:
+            create_or_update_lead(
+                phone_number=phone_number,
+                name=analysis.get("nombre") or None,
+                estatus=None if _es_outbound(call) else "En proceso",
+                call_id=call_id,
+                datos=datos,
+            )
+        logger.info(f"✅ call_analyzed procesado: {call_id}")
+    except Exception:
+        logger.exception(f"❌ Error procesando call_analyzed {call_id}")
+
 @app.post("/webhooks/retell")
-async def retell_webhook(request: Request):
-    """
-    Procesa eventos de Retell AI:
-    - call.started: registra inicio de llamada
-    - call.ended: genera resumen, crea lead, guarda en Notion
-    """
+async def retell_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         payload = await request.json()
-        event_type = payload.get("event")
-        
-        logger.info(f"🔔 Retell webhook: {event_type}")
-        
-        # Evento: Fin de llamada
-        if event_type == "call.ended":
-            call_id = payload.get("call_id")
-            call_metadata = payload.get("metadata", {}) or {}
-            is_outbound = call_metadata.get("call_type") == "outbound"
-
-            if is_outbound:
-                phone_number = call_metadata.get("phone_number") or payload.get("to_number") or "Desconocido"
-            else:
-                phone_number = payload.get("from_number") or payload.get("phone_number") or "Desconocido"
-
-            transcript = payload.get("transcript", "Sin transcripción disponible")
-            duration = payload.get("duration_minutes", 0)
-            call_type_label = "Saliente" if is_outbound else "Entrante"
-
-            logger.info(f"📞 Llamada finalizada ({call_type_label}): {call_id} - {phone_number}")
-
-            # 1. Generar resumen con Anthropic
-            logger.info("⏳ Generando resumen con Anthropic...")
-            summary = generate_call_summary(transcript)
-
-            # 2. Extraer metadata (nombre, interés, etc.)
-            logger.info("📊 Extrayendo metadata...")
-            metadata = extract_call_metadata(transcript)
-
-            # 3. Guardar registro de llamada en Notion
-            logger.info("💾 Guardando llamada en Notion...")
-            call_result = create_call_record(
-                phone_number=phone_number,
-                transcript=transcript,
-                summary=summary,
-                call_id=call_id,
-                duration_minutes=duration,
-                call_type=call_type_label
-            )
-
-            # 4. Crear o actualizar lead en Notion
-            # En llamadas outbound, el estatus ya lo actualizó la función mark_lead_status
-            # durante la llamada; aquí solo refrescamos resumen/temperatura sin pisarlo.
-            logger.info("👤 Creando/actualizando lead...")
-            lead_result = create_or_update_lead(
-                phone_number=phone_number,
-                name=metadata.get("nombre", "Desconocido"),
-                temperatura=metadata.get("interes", "cold"),
-                resumen_llamada=summary,
-                estatus=None if is_outbound else "En proceso"
-            )
-            
-            logger.info(f"✅ Procesamiento completado para {call_id}")
-            
-            return {
-                "status": "processed",
-                "call_id": call_id,
-                "summary_generated": True,
-                "notion_call_saved": call_result.get("success", False),
-                "notion_lead_saved": lead_result.get("success", False),
-                "metadata": metadata
-            }
-        
-        # Evento: Inicio de llamada
-        elif event_type == "call.started":
-            call_id = payload.get("call_id")
-            logger.info(f"📞 Llamada iniciada: {call_id}")
-            return {"status": "acknowledged", "call_id": call_id}
-        
-        # Otros eventos
-        else:
-            logger.info(f"ℹ️ Evento ignorado: {event_type}")
-            return {"status": "received", "event": event_type}
-            
     except Exception as e:
-        logger.error(f"❌ Error procesando webhook: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"JSON inválido: {e}")
+
+    event = payload.get("event")
+    call = payload.get("call") or {}
+    call_id = call.get("call_id")
+    logger.info(f"🔔 Retell webhook: {event} ({call_id})")
+
+    if event == "call_started":
+        return {"status": "acknowledged", "call_id": call_id}
+    if event == "call_ended":
+        background_tasks.add_task(procesar_call_ended, call)
+        return {"status": "accepted", "call_id": call_id}
+    if event == "call_analyzed":
+        background_tasks.add_task(procesar_call_analyzed, call)
+        return {"status": "accepted", "call_id": call_id}
+
+    logger.info(f"ℹ️ Evento ignorado: {event}")
+    return {"status": "ignored", "event": event}
 
 # Webhook de Twilio (placeholder)
 @app.post("/webhooks/twilio/sms")

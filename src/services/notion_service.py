@@ -7,6 +7,7 @@ import logging
 import json
 import requests
 from datetime import datetime
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -101,156 +102,122 @@ def create_call_record(
             "error": str(e)
         }
 
+def _lead_properties(name, temperatura, resumen_llamada, call_id, datos) -> dict:
+    props = {}
+    if name:
+        props["Name"] = {"title": [{"text": {"content": name}}]}
+    if temperatura:
+        props["Temperatura"] = {"select": {"name": temperatura}}
+    if resumen_llamada is not None:
+        props["Resumen Llamada"] = {"rich_text": [{"text": {"content": resumen_llamada[:2000]}}]}
+    if call_id:
+        props["Call ID"] = {"rich_text": [{"text": {"content": call_id}}]}
+    datos = datos or {}
+    correo = (datos.get("correo") or "").strip()
+    if "@" in correo and "." in correo.split("@")[-1]:
+        props["Correo"] = {"email": correo}
+    for campo, columna in (("zona", "Zona"), ("presupuesto", "Presupuesto")):
+        if datos.get(campo):
+            props[columna] = {"rich_text": [{"text": {"content": str(datos[campo])[:2000]}}]}
+    if datos.get("recamaras") is not None:
+        props["Recámaras"] = {"number": datos["recamaras"]}
+    if datos.get("tipo_operacion"):
+        props["Tipo"] = {"select": {"name": str(datos["tipo_operacion"]).capitalize()}}
+    return props
+
+def call_record_exists(call_id: str) -> bool:
+    """Consulta si ya existe un registro en Llamadas con este Call ID. Ante error, devuelve False."""
+    db_id = os.getenv("NOTION_DATABASE_ID_LLAMADAS")
+    response = requests.post(
+        f"{NOTION_API_URL}/databases/{db_id}/query",
+        headers=get_notion_headers(),
+        json={"filter": {"property": "Call ID", "rich_text": {"equals": call_id}}},
+    )
+    if response.status_code != 200:
+        logger.warning(f"⚠️ No se pudo verificar Call ID {call_id}: HTTP {response.status_code}")
+        return False
+    return bool(response.json().get("results"))
+
 def create_or_update_lead(
     phone_number: str,
-    name: str = "Sin nombre",
-    temperatura: str = "cold",
-    resumen_llamada: str = "",
-    estatus: str = "Pendiente de llamar"
+    name: Optional[str] = None,
+    temperatura: Optional[str] = None,
+    resumen_llamada: Optional[str] = None,
+    estatus: Optional[str] = "Pendiente de llamar",
+    call_id: Optional[str] = None,
+    datos: Optional[dict] = None,
 ) -> dict:
     """
-    Crea o actualiza un lead en Notion.
-    Si estatus es None, no se modifica el campo Estatus (usado en llamadas outbound
-    donde el estatus ya fue actualizado por mark_lead_status durante la llamada).
+    Crea o actualiza un lead por teléfono. Si estatus es None, no toca el campo Estatus
+    en actualizaciones (usado en outbound, donde mark_lead_status ya lo cambió durante la llamada).
     """
     try:
         db_id = os.getenv("NOTION_DATABASE_ID_LEADS")
-
         if not db_id:
             raise ValueError("NOTION_DATABASE_ID_LEADS no configurada")
-
-        logger.info("=" * 80)
-        logger.info(f"🔍 BUSCANDO LEAD EXISTENTE PARA {phone_number}")
-        logger.info("=" * 80)
-        logger.info(f"Database ID: {db_id}")
-
-        query_payload = {
-            "filter": {
-                "property": "Teléfono",
-                "type": "phone_number",
-                "phone_number": {
-                    "equals": phone_number
-                }
-            }
-        }
-        logger.info(f"\nQUERY PAYLOAD:")
-        logger.info(json.dumps(query_payload, indent=2))
 
         query_response = requests.post(
             f"{NOTION_API_URL}/databases/{db_id}/query",
             headers=get_notion_headers(),
-            json=query_payload
+            json={
+                "filter": {
+                    "property": "Teléfono",
+                    "type": "phone_number",
+                    "phone_number": {"equals": phone_number}
+                }
+            }
         )
-
-        logger.info(f"Query Status Code: {query_response.status_code}")
-        logger.info(f"Query Response: {query_response.text}")
-
         if query_response.status_code != 200:
-            logger.error(f"❌ ERROR EN QUERY (status {query_response.status_code}):")
-            logger.error(f"Response JSON: {query_response.json()}")
+            logger.error(f"❌ Query de lead falló: HTTP {query_response.status_code} - {query_response.text}")
             return {
                 "success": False,
                 "error": f"Query failed: HTTP {query_response.status_code}",
                 "detail": query_response.text
             }
 
-        results = query_response.json()
+        props = _lead_properties(name, temperatura, resumen_llamada, call_id, datos)
+        results = query_response.json().get("results", [])
 
-        if results.get("results"):
-            # Actualizar existente
-            page_id = results["results"][0]["id"]
-            logger.info(f"📝 ACTUALIZANDO LEAD EXISTENTE: {page_id}")
-
-            update_payload = {
-                "properties": {
-                    "Última Interacción": {"date": {"start": datetime.now().isoformat()}},
-                    "Resumen Llamada": {"rich_text": [{"text": {"content": resumen_llamada[:2000]}}]},
-                    "Temperatura": {"select": {"name": temperatura}},
-                }
-            }
+        if results:
+            page_id = results[0]["id"]
+            props["Última Interacción"] = {"date": {"start": datetime.now().isoformat()}}
             if estatus is not None:
-                update_payload["properties"]["Estatus"] = {"select": {"name": estatus}}
-            logger.info(f"\nUPDATE PAYLOAD:")
-            logger.info(json.dumps(update_payload, indent=2, default=str))
-
-            update_response = requests.patch(
+                props["Estatus"] = {"select": {"name": estatus}}
+            response = requests.patch(
                 f"{NOTION_API_URL}/pages/{page_id}",
                 headers=get_notion_headers(),
-                json=update_payload
+                json={"properties": props}
             )
-
-            logger.info(f"Update Status Code: {update_response.status_code}")
-            logger.info(f"Update Response: {update_response.text}")
-
-            if update_response.status_code != 200:
-                logger.error(f"❌ ERROR EN UPDATE (status {update_response.status_code}):")
-                logger.error(f"Response JSON: {update_response.json()}")
-                return {
-                    "success": False,
-                    "error": f"Update failed: HTTP {update_response.status_code}",
-                    "detail": update_response.text
-                }
-
-            logger.info(f"✅ Lead actualizado")
-            return {
-                "success": True,
-                "action": "updated",
-                "page_id": page_id
-            }
+            action = "updated"
         else:
-            # Crear nuevo
-            logger.info(f"➕ CREANDO NUEVO LEAD PARA {phone_number}")
-
-            create_payload = {
-                "parent": {"database_id": db_id},
-                "properties": {
-                    "Name": {"title": [{"text": {"content": name}}]},
-                    "Teléfono": {"phone_number": phone_number},
-                    "Temperatura": {"select": {"name": temperatura}},
-                    "Estatus": {"select": {"name": estatus or "Pendiente de llamar"}},
-                    "Resumen Llamada": {"rich_text": [{"text": {"content": resumen_llamada[:2000]}}]},
-                    "Fecha Primer Contacto": {"date": {"start": datetime.now().isoformat()}},
-                }
-            }
-            logger.info(f"\nCREATE PAYLOAD:")
-            logger.info(json.dumps(create_payload, indent=2, default=str))
-
-            create_response = requests.post(
+            props.setdefault("Name", {"title": [{"text": {"content": "Desconocido"}}]})
+            props.setdefault("Temperatura", {"select": {"name": "cold"}})
+            props.setdefault("Resumen Llamada", {"rich_text": []})
+            props["Teléfono"] = {"phone_number": phone_number}
+            props["Estatus"] = {"select": {"name": estatus or "Pendiente de llamar"}}
+            props["Fecha Primer Contacto"] = {"date": {"start": datetime.now().isoformat()}}
+            props["Última Interacción"] = {"date": {"start": datetime.now().isoformat()}}
+            response = requests.post(
                 f"{NOTION_API_URL}/pages",
                 headers=get_notion_headers(),
-                json=create_payload
+                json={"parent": {"database_id": db_id}, "properties": props}
             )
+            action = "created"
 
-            logger.info(f"Create Status Code: {create_response.status_code}")
-            logger.info(f"Create Response: {create_response.text}")
-
-            if create_response.status_code != 200:
-                logger.error(f"❌ ERROR EN CREATE (status {create_response.status_code}):")
-                logger.error(f"Response JSON: {create_response.json()}")
-                return {
-                    "success": False,
-                    "error": f"Create failed: HTTP {create_response.status_code}",
-                    "detail": create_response.text
-                }
-
-            result = create_response.json()
-            logger.info(f"✅ Lead creado: {result['id']}")
+        if response.status_code != 200:
+            logger.error(f"❌ Lead {action} falló: HTTP {response.status_code} - {response.text}")
             return {
-                "success": True,
-                "action": "created",
-                "page_id": result["id"]
+                "success": False,
+                "error": f"{action} failed: HTTP {response.status_code}",
+                "detail": response.text
             }
+
+        page_id = response.json()["id"]
+        logger.info(f"✅ Lead {action}: {page_id}")
+        return {"success": True, "action": action, "page_id": page_id}
     except Exception as e:
-        logger.error("=" * 80)
-        logger.error("❌ EXCEPTION EN create_or_update_lead")
-        logger.error("=" * 80)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("=" * 80)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        logger.error(f"❌ Error en create_or_update_lead: {type(e).__name__}: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 def search_properties(
     ubicacion_filter: str = None,
