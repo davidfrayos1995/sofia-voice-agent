@@ -146,6 +146,7 @@ def create_or_update_lead(
     estatus: Optional[str] = "Pendiente de llamar",
     call_id: Optional[str] = None,
     datos: Optional[dict] = None,
+    resumen_si_vacio: Optional[str] = None,
 ) -> dict:
     """
     Crea o actualiza un lead por teléfono. Si estatus es None, no toca el campo Estatus
@@ -177,6 +178,10 @@ def create_or_update_lead(
 
         props = _lead_properties(name, temperatura, resumen_llamada, call_id, datos)
         results = query_response.json().get("results", [])
+
+        if resumen_si_vacio and "Resumen Llamada" not in props:
+            if not results or not results[0]["properties"].get("Resumen Llamada", {}).get("rich_text"):
+                props["Resumen Llamada"] = {"rich_text": [{"text": {"content": resumen_si_vacio[:2000]}}]}
 
         if results:
             page_id = results[0]["id"]

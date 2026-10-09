@@ -15,7 +15,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # Agregar src al path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from services.anthropic_service import generate_call_summary, extract_call_metadata
+from services.anthropic_service import generate_call_summary, extract_call_metadata, resumen_es_valido
 from services.notion_service import (
     call_record_exists,
     create_call_record,
@@ -73,6 +73,21 @@ def _es_outbound(call: dict) -> bool:
 def _telefono_del_lead(call: dict) -> str:
     return (call.get("to_number") if _es_outbound(call) else call.get("from_number")) or ""
 
+NOMBRES_INVALIDOS = {"", "Error", "Desconocido"}
+TEMPERATURAS_VALIDAS = {"hot", "warm", "cold"}
+
+def _nombre_valido(metadata: dict):
+    if metadata.get("ok") is not True:
+        return None
+    nombre = (metadata.get("nombre") or "").strip()
+    return None if nombre in NOMBRES_INVALIDOS else nombre
+
+def _temperatura_valida(metadata: dict):
+    if metadata.get("ok") is not True:
+        return None
+    interes = metadata.get("interes")
+    return interes if interes in TEMPERATURAS_VALIDAS else None
+
 def procesar_call_ended(call: dict):
     call_id = call.get("call_id")
     phone_number = _telefono_del_lead(call)
@@ -89,12 +104,13 @@ def procesar_call_ended(call: dict):
 
         transcript = call.get("transcript") or "Sin transcripción disponible"
         summary = generate_call_summary(transcript)
+        resumen_ok = resumen_es_valido(summary)
         metadata = extract_call_metadata(transcript)
 
         create_call_record(
             phone_number=phone_number,
             transcript=transcript,
-            summary=summary,
+            summary=summary if resumen_ok else "Sin resumen disponible",
             call_id=call_id,
             duration_minutes=round((call.get("duration_ms") or 0) / 60000, 2),
             call_type="Saliente" if outbound else "Entrante",
@@ -103,9 +119,9 @@ def procesar_call_ended(call: dict):
         with lead_lock:
             create_or_update_lead(
                 phone_number=phone_number,
-                name=metadata.get("nombre") or None,
-                temperatura=metadata.get("interes"),
-                resumen_llamada=summary,
+                name=_nombre_valido(metadata),
+                temperatura=_temperatura_valida(metadata),
+                resumen_llamada=summary if resumen_ok else None,
                 estatus=None if outbound else "En proceso",
                 call_id=call_id,
             )
@@ -137,6 +153,7 @@ def procesar_call_analyzed(call: dict):
                 estatus=None if _es_outbound(call) else "En proceso",
                 call_id=call_id,
                 datos=datos,
+                resumen_si_vacio=(call.get("call_analysis") or {}).get("call_summary"),
             )
         logger.info(f"✅ call_analyzed procesado: {call_id}")
     except Exception:

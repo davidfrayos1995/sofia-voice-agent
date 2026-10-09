@@ -3,7 +3,14 @@ Servicio Anthropic para generar resúmenes de llamadas
 """
 
 import os
+import re
+import json
 from anthropic import Anthropic
+
+RESUMEN_ERROR_PREFIX = "Error generando resumen"
+
+def resumen_es_valido(resumen: str) -> bool:
+    return bool(resumen) and not resumen.startswith(RESUMEN_ERROR_PREFIX)
 
 def generate_call_summary(transcript: str) -> str:
     """
@@ -13,9 +20,9 @@ def generate_call_summary(transcript: str) -> str:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY no configurada")
-        
+
         client = Anthropic(api_key=api_key)
-        
+
         message = client.messages.create(
             model="claude-sonnet-5",
             max_tokens=1024,
@@ -39,22 +46,35 @@ Resumen:"""
                 }
             ]
         )
-        
+
         return message.content[0].text
     except Exception as e:
-        return f"Error generando resumen: {str(e)}"
+        return f"{RESUMEN_ERROR_PREFIX}: {str(e)}"
+
+def _parsear_metadata(texto: str) -> dict:
+    bloque = re.search(r"```(?:json)?\s*(.*?)```", texto, re.S)
+    candidato = (bloque.group(1) if bloque else texto).strip()
+    try:
+        datos = json.loads(candidato)
+    except ValueError:
+        return {"ok": False, "error": "respuesta sin JSON legible"}
+    if not isinstance(datos, dict):
+        return {"ok": False, "error": "JSON no es un objeto"}
+    datos["ok"] = True
+    return datos
 
 def extract_call_metadata(transcript: str) -> dict:
     """
-    Extrae metadata de la llamada (nombre, interés, etc.)
+    Extrae metadata de la llamada (nombre, interés, etc.).
+    Devuelve {"ok": True, ...} si se pudo leer, o {"ok": False, "error": ...} si no.
     """
     try:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY no configurada")
-        
+
         client = Anthropic(api_key=api_key)
-        
+
         message = client.messages.create(
             model="claude-sonnet-5",
             max_tokens=256,
@@ -74,22 +94,7 @@ JSON:"""
                 }
             ]
         )
-        
-        import json
-        try:
-            return json.loads(message.content[0].text)
-        except:
-            return {
-                "nombre": "Desconocido",
-                "interes": "cold",
-                "propiedades": [],
-                "proximo_paso": "Seguimiento"
-            }
-    except Exception as e:
-        return {
-            "nombre": "Error",
-            "interes": "cold",
-            "propiedades": [],
-            "proximo_paso": f"Error: {str(e)}"
-        }
 
+        return _parsear_metadata(message.content[0].text)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
