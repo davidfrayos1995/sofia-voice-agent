@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from services.anthropic_service import generate_call_summary, extract_call_metadata, resumen_es_valido
 from services.notion_service import (
+    actualizar_resumen_llamada,
     call_record_exists,
     create_call_record,
     create_or_update_lead,
@@ -94,6 +95,28 @@ def _temperatura_valida(metadata: dict):
 def _enum_valido(valor, validos: set):
     return valor if valor in validos else None
 
+VALORES_SIN_DATO = {"", "no especificado", "no especificada", "desconocido", "desconocida", "n/a", "na", "none", "null", "sin dato"}
+TIPOS_OPERACION = {"renta", "compra"}
+resumenes_retell_pendientes = {}
+
+def _dato(valor):
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    return None if texto.lower() in VALORES_SIN_DATO else texto
+
+def _dato_numerico(valor):
+    texto = _dato(valor)
+    if texto is None:
+        return None
+    try:
+        numero = float(texto)
+    except ValueError:
+        return None
+    if numero == 0:
+        return None
+    return int(numero) if numero.is_integer() else numero
+
 def procesar_call_ended(call: dict):
     call_id = call.get("call_id")
     phone_number = _telefono_del_lead(call)
@@ -113,22 +136,30 @@ def procesar_call_ended(call: dict):
         resumen_ok = resumen_es_valido(summary)
         metadata = extract_call_metadata(transcript)
 
-        create_call_record(
-            phone_number=phone_number,
-            transcript=transcript,
-            summary=summary if resumen_ok else "Sin resumen disponible",
-            call_id=call_id,
-            duration_minutes=round((call.get("duration_ms") or 0) / 60000, 2),
-            call_type="Saliente" if outbound else "Entrante",
-            start_timestamp_ms=call.get("start_timestamp"),
-            nombre=_nombre_valido(metadata),
-        )
-
         with lead_lock:
+            if call_record_exists(call_id):
+                logger.info(f"⏭️ call_ended {call_id} ya procesado, se omite")
+                return
+
+            resumen_retell = resumenes_retell_pendientes.pop(call_id, None)
+            resumen_llamada = resumen_retell or (summary if resumen_ok else "Sin resumen disponible")
+
+            create_call_record(
+                phone_number=phone_number,
+                transcript=transcript,
+                summary=resumen_llamada,
+                call_id=call_id,
+                duration_minutes=round((call.get("duration_ms") or 0) / 60000, 2),
+                call_type="Saliente" if outbound else "Entrante",
+                start_timestamp_ms=call.get("start_timestamp"),
+                nombre=_nombre_valido(metadata),
+            )
+
             create_or_update_lead(
                 phone_number=phone_number,
                 estatus=None if outbound else "En proceso",
-                resumen_llamada=summary if resumen_ok else None,
+                resumen_llamada=resumen_retell,
+                resumen_respaldo=summary if resumen_ok else None,
                 call_id=call_id,
                 nombre_respaldo=_nombre_valido(metadata),
                 temperatura_respaldo=_temperatura_valida(metadata),
@@ -146,26 +177,30 @@ def procesar_call_analyzed(call: dict):
 
     call_analysis = call.get("call_analysis") or {}
     analysis = call_analysis.get("custom_analysis_data") or {}
+    resumen_retell = _dato(call_analysis.get("call_summary"))
+    tipo = (_dato(analysis.get("tipo_operacion")) or "").lower()
     datos = {
-        "correo": analysis.get("correo"),
-        "zona": analysis.get("zona"),
-        "presupuesto": analysis.get("presupuesto"),
-        "recamaras": analysis.get("recamaras"),
-        "tipo_operacion": analysis.get("tipo_operacion"),
-        "propiedad_ofrecida": analysis.get("propiedad_ofrecida"),
+        "correo": _dato(analysis.get("correo")),
+        "zona": _dato(analysis.get("zona")),
+        "presupuesto": _dato(analysis.get("presupuesto")),
+        "recamaras": _dato_numerico(analysis.get("recamaras")),
+        "tipo_operacion": tipo if tipo in TIPOS_OPERACION else None,
+        "propiedad_ofrecida": _dato(analysis.get("propiedad_ofrecida")),
     }
 
     try:
         with lead_lock:
             create_or_update_lead(
                 phone_number=phone_number,
-                name=analysis.get("nombre") or None,
+                name=_dato(analysis.get("nombre")),
                 temperatura=_enum_valido(analysis.get("temperatura"), TEMPERATURAS_VALIDAS),
+                resumen_llamada=resumen_retell,
                 estatus=None if _es_outbound(call) else "En proceso",
                 call_id=call_id,
                 datos=datos,
-                resumen_si_vacio=call_analysis.get("call_summary"),
             )
+            if resumen_retell and not actualizar_resumen_llamada(call_id, resumen_retell):
+                resumenes_retell_pendientes[call_id] = resumen_retell
         logger.info(f"✅ call_analyzed procesado: {call_id}")
     except Exception:
         logger.exception(f"❌ Error procesando call_analyzed {call_id}")

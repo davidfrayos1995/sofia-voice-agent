@@ -117,6 +117,27 @@ def call_record_exists(call_id: str) -> bool:
         return False
     return bool(response.json().get("results"))
 
+def actualizar_resumen_llamada(call_id: str, resumen: str) -> bool:
+    """Escribe el resumen de Retell en la fila de Llamadas con ese Call ID. False si no existe."""
+    db_id = os.getenv("NOTION_DATABASE_ID_LLAMADAS")
+    response = requests.post(
+        f"{NOTION_API_URL}/databases/{db_id}/query",
+        headers=get_notion_headers(),
+        json={"filter": {"property": "Call ID", "rich_text": {"equals": call_id}}},
+    )
+    if response.status_code != 200 or not response.json().get("results"):
+        return False
+    page_id = response.json()["results"][0]["id"]
+    patch = requests.patch(
+        f"{NOTION_API_URL}/pages/{page_id}",
+        headers=get_notion_headers(),
+        json={"properties": {"Resumen": {"rich_text": [{"text": {"content": resumen[:2000]}}]}}},
+    )
+    if patch.status_code != 200:
+        logger.error(f"❌ No se actualizó Resumen de {call_id}: HTTP {patch.status_code}")
+        return False
+    return True
+
 def create_or_update_lead(
     phone_number: str,
     name: Optional[str] = None,
@@ -125,7 +146,7 @@ def create_or_update_lead(
     estatus: Optional[str] = "Pendiente de llamar",
     call_id: Optional[str] = None,
     datos: Optional[dict] = None,
-    resumen_si_vacio: Optional[str] = None,
+    resumen_respaldo: Optional[str] = None,
     nombre_respaldo: Optional[str] = None,
     temperatura_respaldo: Optional[str] = None,
 ) -> dict:
@@ -160,9 +181,10 @@ def create_or_update_lead(
         props = _lead_properties(name, temperatura, resumen_llamada, call_id, datos)
         results = query_response.json().get("results", [])
 
-        if resumen_si_vacio and "Resumen Llamada" not in props:
-            if not results or not results[0]["properties"].get("Resumen Llamada", {}).get("rich_text"):
-                props["Resumen Llamada"] = {"rich_text": [{"text": {"content": resumen_si_vacio[:2000]}}]}
+        if resumen_llamada is None and resumen_respaldo:
+            existente = results[0]["properties"].get("Resumen Llamada", {}).get("rich_text") if results else None
+            if not existente:
+                props["Resumen Llamada"] = {"rich_text": [{"text": {"content": resumen_respaldo[:2000]}}]}
 
         if results:
             page_id = results[0]["id"]
