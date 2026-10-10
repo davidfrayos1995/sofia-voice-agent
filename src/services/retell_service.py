@@ -187,15 +187,11 @@ def trigger_outbound_call(
             }
         }
 
-        logger.info("=" * 80)
-        logger.info(f"📞 DISPARANDO LLAMADA OUTBOUND A {to_number}")
-        logger.info("=" * 80)
-        logger.info(json.dumps(payload, indent=2, ensure_ascii=False))
+        logger.info(f"📞 Disparando llamada outbound (lead_page_id={lead_page_id})")
 
         resp = requests.post(f"{RETELL_API_URL}/v2/create-phone-call", headers=get_retell_headers(), json=payload)
 
-        logger.info(f"Status Code: {resp.status_code}")
-        logger.info(f"Response: {resp.text}")
+        logger.info(f"Retell create-phone-call: HTTP {resp.status_code}")
 
         if resp.status_code not in (200, 201):
             logger.error(f"❌ Error disparando llamada: {resp.status_code}")

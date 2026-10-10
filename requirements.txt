@@ -6,6 +6,7 @@ requests==2.31.0
 
 # Integraciones
 anthropic>=0.28.0
+retell-sdk==6.2.5
 notion-client==2.2.1
 twilio==8.10.0
 apscheduler==3.10.4

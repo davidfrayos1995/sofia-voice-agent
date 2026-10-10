@@ -6,7 +6,7 @@ import os
 import logging
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -29,41 +29,39 @@ def create_call_record(
     transcript: str,
     summary: str,
     call_id: str,
-    duration_minutes: int = 0,
-    call_type: str = "Entrante"
+    duration_minutes: float = 0,
+    call_type: str = "Entrante",
+    start_timestamp_ms: Optional[int] = None,
+    nombre: Optional[str] = None,
 ) -> dict:
     """
-    Crea un registro de llamada en Notion
+    Crea un registro de llamada en Notion. La fecha es el inicio de la llamada en UTC.
     """
     try:
         db_id = os.getenv("NOTION_DATABASE_ID_LLAMADAS")
-
         if not db_id:
             raise ValueError("NOTION_DATABASE_ID_LLAMADAS no configurada")
+
+        inicio = (datetime.fromtimestamp(start_timestamp_ms / 1000, tz=timezone.utc)
+                  if start_timestamp_ms else datetime.now(timezone.utc))
+        etiqueta = nombre or phone_number
+        titulo = f"Llamada · {etiqueta} · {inicio.strftime('%Y-%m-%d %H:%M')} UTC"
 
         payload = {
             "parent": {"database_id": db_id},
             "properties": {
-                "Fecha": {"date": {"start": datetime.now().isoformat()}},
+                "Name": {"title": [{"text": {"content": titulo}}]},
+                "Fecha": {"date": {"start": inicio.isoformat()}},
                 "Contacto": {"rich_text": [{"text": {"content": phone_number}}]},
                 "Teléfono": {"phone_number": phone_number},
                 "Duración (min)": {"number": duration_minutes},
                 "Tipo": {"select": {"name": call_type}},
                 "Transcript": {"rich_text": [{"text": {"content": transcript[:2000]}}]},
-                "Resumen (Anthropic)": {"rich_text": [{"text": {"content": summary[:2000]}}]},
+                "Resumen": {"rich_text": [{"text": {"content": summary[:2000]}}]},
                 "Estatus": {"select": {"name": "Completada"}},
                 "Call ID": {"rich_text": [{"text": {"content": call_id}}]},
             }
         }
-
-        logger.info("=" * 80)
-        logger.info("📤 ENVIANDO A NOTION (CREAR LLAMADA)")
-        logger.info("=" * 80)
-        logger.info(f"URL: POST {NOTION_API_URL}/pages")
-        logger.info(f"Database ID: {db_id}")
-        logger.info(f"\nPAYLOAD COMPLETO:")
-        logger.info(json.dumps(payload, indent=2, default=str))
-        logger.info("=" * 80)
 
         response = requests.post(
             f"{NOTION_API_URL}/pages",
@@ -71,36 +69,15 @@ def create_call_record(
             json=payload
         )
 
-        logger.info(f"Status Code: {response.status_code}")
-        logger.info(f"Response: {response.text}")
-
         if response.status_code != 200:
-            logger.error(f"❌ ERROR (status {response.status_code}):")
-            logger.error(f"Response JSON: {response.json()}")
-            return {
-                "success": False,
-                "error": f"HTTP {response.status_code}",
-                "detail": response.text
-            }
+            logger.error(f"❌ Llamada {call_id} no guardada: HTTP {response.status_code} - {response.json().get('message')}")
+            return {"success": False, "error": f"HTTP {response.status_code}"}
 
-        result = response.json()
-        logger.info(f"✅ Llamada guardada: {result['id']}")
-        return {
-            "success": True,
-            "page_id": result["id"],
-            "url": result.get("url", "")
-        }
+        logger.info(f"💾 Llamada guardada en Notion: {call_id}")
+        return {"success": True, "page_id": response.json()["id"]}
     except Exception as e:
-        logger.error("=" * 80)
-        logger.error("❌ EXCEPTION EN create_call_record")
-        logger.error("=" * 80)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("=" * 80)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        logger.error(f"❌ Error en create_call_record ({call_id}): {type(e).__name__}: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 def _lead_properties(name, temperatura, resumen_llamada, call_id, datos) -> dict:
     props = {}
@@ -123,6 +100,8 @@ def _lead_properties(name, temperatura, resumen_llamada, call_id, datos) -> dict
         props["Recámaras"] = {"number": datos["recamaras"]}
     if datos.get("tipo_operacion"):
         props["Tipo"] = {"select": {"name": str(datos["tipo_operacion"]).capitalize()}}
+    if datos.get("propiedad_ofrecida"):
+        props["Propiedad ofrecida"] = {"rich_text": [{"text": {"content": str(datos["propiedad_ofrecida"])[:2000]}}]}
     return props
 
 def call_record_exists(call_id: str) -> bool:
@@ -147,6 +126,8 @@ def create_or_update_lead(
     call_id: Optional[str] = None,
     datos: Optional[dict] = None,
     resumen_si_vacio: Optional[str] = None,
+    nombre_respaldo: Optional[str] = None,
+    temperatura_respaldo: Optional[str] = None,
 ) -> dict:
     """
     Crea o actualiza un lead por teléfono. Si estatus es None, no toca el campo Estatus
@@ -195,6 +176,10 @@ def create_or_update_lead(
             )
             action = "updated"
         else:
+            if nombre_respaldo and "Name" not in props:
+                props["Name"] = {"title": [{"text": {"content": nombre_respaldo}}]}
+            if temperatura_respaldo and "Temperatura" not in props:
+                props["Temperatura"] = {"select": {"name": temperatura_respaldo}}
             props.setdefault("Name", {"title": [{"text": {"content": "Desconocido"}}]})
             props.setdefault("Temperatura", {"select": {"name": "cold"}})
             props.setdefault("Resumen Llamada", {"rich_text": []})

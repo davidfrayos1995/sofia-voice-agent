@@ -4,6 +4,7 @@ Agente de voz IA para inmobiliaria con Retell AI
 """
 
 import os
+import json
 import logging
 import threading
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 from datetime import datetime
 import sys
 from apscheduler.schedulers.background import BackgroundScheduler
+from retell.lib.webhook_auth import verify as verificar_firma_retell
 
 # Agregar src al path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -75,6 +77,7 @@ def _telefono_del_lead(call: dict) -> str:
 
 NOMBRES_INVALIDOS = {"", "Error", "Desconocido"}
 TEMPERATURAS_VALIDAS = {"hot", "warm", "cold"}
+RETELL_SIGNATURE_MODE = os.getenv("RETELL_SIGNATURE_MODE", "log").lower()
 
 def _nombre_valido(metadata: dict):
     if metadata.get("ok") is not True:
@@ -87,6 +90,9 @@ def _temperatura_valida(metadata: dict):
         return None
     interes = metadata.get("interes")
     return interes if interes in TEMPERATURAS_VALIDAS else None
+
+def _enum_valido(valor, validos: set):
+    return valor if valor in validos else None
 
 def procesar_call_ended(call: dict):
     call_id = call.get("call_id")
@@ -114,16 +120,18 @@ def procesar_call_ended(call: dict):
             call_id=call_id,
             duration_minutes=round((call.get("duration_ms") or 0) / 60000, 2),
             call_type="Saliente" if outbound else "Entrante",
+            start_timestamp_ms=call.get("start_timestamp"),
+            nombre=_nombre_valido(metadata),
         )
 
         with lead_lock:
             create_or_update_lead(
                 phone_number=phone_number,
-                name=_nombre_valido(metadata),
-                temperatura=_temperatura_valida(metadata),
-                resumen_llamada=summary if resumen_ok else None,
                 estatus=None if outbound else "En proceso",
+                resumen_llamada=summary if resumen_ok else None,
                 call_id=call_id,
+                nombre_respaldo=_nombre_valido(metadata),
+                temperatura_respaldo=_temperatura_valida(metadata),
             )
         logger.info(f"✅ call_ended procesado: {call_id}")
     except Exception:
@@ -136,13 +144,15 @@ def procesar_call_analyzed(call: dict):
         logger.warning(f"⚠️ call_analyzed {call_id} sin teléfono, se omite")
         return
 
-    analysis = (call.get("call_analysis") or {}).get("custom_analysis_data") or {}
+    call_analysis = call.get("call_analysis") or {}
+    analysis = call_analysis.get("custom_analysis_data") or {}
     datos = {
         "correo": analysis.get("correo"),
         "zona": analysis.get("zona"),
         "presupuesto": analysis.get("presupuesto"),
         "recamaras": analysis.get("recamaras"),
         "tipo_operacion": analysis.get("tipo_operacion"),
+        "propiedad_ofrecida": analysis.get("propiedad_ofrecida"),
     }
 
     try:
@@ -150,10 +160,11 @@ def procesar_call_analyzed(call: dict):
             create_or_update_lead(
                 phone_number=phone_number,
                 name=analysis.get("nombre") or None,
+                temperatura=_enum_valido(analysis.get("temperatura"), TEMPERATURAS_VALIDAS),
                 estatus=None if _es_outbound(call) else "En proceso",
                 call_id=call_id,
                 datos=datos,
-                resumen_si_vacio=(call.get("call_analysis") or {}).get("call_summary"),
+                resumen_si_vacio=call_analysis.get("call_summary"),
             )
         logger.info(f"✅ call_analyzed procesado: {call_id}")
     except Exception:
@@ -161,10 +172,20 @@ def procesar_call_analyzed(call: dict):
 
 @app.post("/webhooks/retell")
 async def retell_webhook(request: Request, background_tasks: BackgroundTasks):
+    raw = await request.body()
+    firma = request.headers.get("x-retell-signature", "")
+    api_key = os.getenv("RETELL_API_KEY", "")
+    firma_valida = bool(api_key and firma) and verificar_firma_retell(raw.decode("utf-8"), api_key, firma)
+    if not firma_valida:
+        if RETELL_SIGNATURE_MODE == "strict":
+            logger.warning("❌ Webhook rechazado: firma de Retell inválida o ausente")
+            raise HTTPException(status_code=401, detail="firma inválida")
+        logger.warning("⚠️ Firma de Retell inválida o ausente (modo log: se acepta)")
+
     try:
-        payload = await request.json()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"JSON inválido: {e}")
+        payload = json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON inválido")
 
     event = payload.get("event")
     call = payload.get("call") or {}
