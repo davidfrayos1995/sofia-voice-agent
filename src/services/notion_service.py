@@ -5,6 +5,7 @@ Servicio Notion para guardar información de llamadas, leads y buscar propiedade
 import os
 import logging
 import json
+import unicodedata
 import requests
 from datetime import datetime, timezone
 from typing import Optional
@@ -231,6 +232,23 @@ def create_or_update_lead(
         logger.error(f"❌ Error en create_or_update_lead: {type(e).__name__}: {str(e)}")
         return {"success": False, "error": str(e)}
 
+ZONAS_GENERICAS = {
+    "", "cualquiera", "cualquier zona", "cualquier colonia", "cualquier lugar", "donde sea",
+    "todas", "todas las zonas", "no importa", "me da igual", "indistinto", "sin preferencia",
+    "ninguna", "ninguna zona",
+}
+
+def _normalizar_texto(texto: str) -> str:
+    sin_acentos = unicodedata.normalize("NFKD", texto)
+    sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
+    sin_puntuacion = "".join(" " if unicodedata.category(c).startswith("P") else c for c in sin_acentos)
+    return " ".join(sin_puntuacion.lower().split())
+
+def _zona_buscable(zona) -> bool:
+    if not zona:
+        return False
+    return _normalizar_texto(zona) not in ZONAS_GENERICAS
+
 def search_properties(
     ubicacion_filter: str = None,
     precio_max: int = None,
@@ -343,13 +361,12 @@ def search_properties(
             }
             propiedades.append(prop_data)
 
-        # Filtro adicional en memoria para ubicación (búsqueda por texto)
-        if ubicacion_filter:
-            ubicacion_lower = ubicacion_filter.lower()
+        if _zona_buscable(ubicacion_filter):
+            zona = _normalizar_texto(ubicacion_filter)
             propiedades = [
                 p for p in propiedades
-                if ubicacion_lower in p.get("ubicacion", "").lower() or
-                   ubicacion_lower in p.get("nombre", "").lower()
+                if zona in _normalizar_texto(p.get("ubicacion", "")) or
+                   zona in _normalizar_texto(p.get("nombre", ""))
             ]
 
         logger.info(f"\n✅ Encontradas {len(propiedades)} propiedades")
