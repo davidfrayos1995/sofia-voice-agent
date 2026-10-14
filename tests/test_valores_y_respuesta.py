@@ -87,6 +87,21 @@ class RespuestaBusquedaTest(unittest.TestCase):
         self.assertEqual(texto, "Found 2 listings: A in Orlando, $1,800 per month (USD), 1 bedroom, 1 bath; "
                                 "B in Miami, $3,200 per month (USD), 3 bedrooms, 2.5 baths.")
 
+    def test_muestra_las_mas_baratas_primero_y_avisa_el_total(self):
+        props = [{"nombre": f"P{precio}", "ubicacion": "Orlando", "precio": precio, "moneda": "USD", "recamaras": 1, "banos": 1, "tipo": None}
+                 for precio in [2000, 1400, 1950, 1700, 1800]]
+        texto = self.llamar({"success": True, "propiedades": props})
+        self.assertTrue(texto.startswith("Found 5 listings; showing 3: P1400 in Orlando"))
+        self.assertIn("P1700", texto)
+        self.assertNotIn("P2000", texto)
+        self.assertLess(texto.index("P1400"), texto.index("P1700"))
+
+    def test_sin_precio_va_al_final(self):
+        props = [{"nombre": "Sin precio", "ubicacion": "X", "precio": None, "moneda": "USD", "recamaras": 0, "banos": 1, "tipo": None},
+                 {"nombre": "Barata", "ubicacion": "X", "precio": 1000, "moneda": "USD", "recamaras": 0, "banos": 1, "tipo": None}]
+        texto = self.llamar({"success": True, "propiedades": props})
+        self.assertLess(texto.index("Barata"), texto.index("Sin precio"))
+
     def test_no_contiene_espanol(self):
         texto = self.llamar({"success": True, "propiedades": []}) + self.llamar({"success": False})
         for palabra in ["encontr", "propiedades", "mes", "recámara", "disponible"]:

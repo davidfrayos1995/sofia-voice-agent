@@ -285,13 +285,18 @@ async def function_search_properties(request: Request):
         if not result.get("success"):
             return {"result": "Listings are unavailable right now."}
 
-        propiedades = result.get("propiedades", [])[:3]
-        if not propiedades:
+        todas = result.get("propiedades", [])
+        if not todas:
             return {"result": "No listings match those criteria."}
 
-        descripciones = "; ".join(_describir_propiedad(p) for p in propiedades)
-        plural = "s" if len(propiedades) != 1 else ""
-        return {"result": f"Found {len(propiedades)} listing{plural}: {descripciones}."}
+        por_precio = sorted(todas, key=lambda p: (p.get("precio") is None, p.get("precio") or 0))
+        mostradas = por_precio[:3]
+        descripciones = "; ".join(_describir_propiedad(p) for p in mostradas)
+        if len(todas) > len(mostradas):
+            encabezado = f"Found {len(todas)} listings; showing {len(mostradas)}"
+        else:
+            encabezado = f"Found {len(todas)} listing{'' if len(todas) == 1 else 's'}"
+        return {"result": f"{encabezado}: {descripciones}."}
     except Exception as e:
         logger.error(f"❌ Error en function_search_properties: {str(e)}", exc_info=True)
         return {"result": "There was a problem searching listings. Let's continue the call."}
