@@ -100,7 +100,9 @@ def _lead_properties(name, temperatura, resumen_llamada, call_id, datos) -> dict
     if datos.get("recamaras") is not None:
         props["Recámaras"] = {"number": datos["recamaras"]}
     if datos.get("tipo_operacion"):
-        props["Tipo"] = {"select": {"name": str(datos["tipo_operacion"]).capitalize()}}
+        props["Tipo"] = {"select": {"name": datos["tipo_operacion"]}}
+    if datos.get("idioma"):
+        props["Idioma"] = {"select": {"name": datos["idioma"]}}
     if datos.get("propiedad_ofrecida"):
         props["Propiedad ofrecida"] = {"rich_text": [{"text": {"content": str(datos["propiedad_ofrecida"])[:2000]}}]}
     return props
@@ -138,6 +140,27 @@ def actualizar_resumen_llamada(call_id: str, resumen: str) -> bool:
         logger.error(f"❌ No se actualizó Resumen de {call_id}: HTTP {patch.status_code}")
         return False
     return True
+
+PROPIEDADES_OPCIONALES = {"Idioma", "Propiedad ofrecida", "Moneda", "Tipo de propiedad"}
+
+def _escribir_pagina(metodo: str, url: str, props: dict, extra: Optional[dict] = None):
+    """Escribe en Notion; si falta una propiedad opcional, reintenta sin ella para no perder el registro."""
+    props = dict(props)
+    while True:
+        payload = {**(extra or {}), "properties": props}
+        response = getattr(requests, metodo.lower())(url, headers=get_notion_headers(), json=payload)
+        if response.status_code != 400:
+            return response
+        try:
+            mensaje = response.json().get("message", "")
+        except ValueError:
+            return response
+        faltantes = [nombre for nombre in PROPIEDADES_OPCIONALES if nombre in props and nombre in mensaje]
+        if not faltantes:
+            return response
+        for nombre in faltantes:
+            logger.warning(f"⚠️ Notion no tiene la columna '{nombre}'; se guarda sin ella")
+            props.pop(nombre)
 
 def create_or_update_lead(
     phone_number: str,
@@ -192,11 +215,7 @@ def create_or_update_lead(
             props["Última Interacción"] = {"date": {"start": datetime.now().isoformat()}}
             if estatus is not None:
                 props["Estatus"] = {"select": {"name": estatus}}
-            response = requests.patch(
-                f"{NOTION_API_URL}/pages/{page_id}",
-                headers=get_notion_headers(),
-                json={"properties": props}
-            )
+            response = _escribir_pagina("PATCH", f"{NOTION_API_URL}/pages/{page_id}", props)
             action = "updated"
         else:
             if nombre_respaldo and "Name" not in props:
@@ -210,11 +229,7 @@ def create_or_update_lead(
             props["Estatus"] = {"select": {"name": estatus or "Pendiente de llamar"}}
             props["Fecha Primer Contacto"] = {"date": {"start": datetime.now().isoformat()}}
             props["Última Interacción"] = {"date": {"start": datetime.now().isoformat()}}
-            response = requests.post(
-                f"{NOTION_API_URL}/pages",
-                headers=get_notion_headers(),
-                json={"parent": {"database_id": db_id}, "properties": props}
-            )
+            response = _escribir_pagina("POST", f"{NOTION_API_URL}/pages", props, {"parent": {"database_id": db_id}})
             action = "created"
 
         if response.status_code != 200:
@@ -232,17 +247,46 @@ def create_or_update_lead(
         logger.error(f"❌ Error en create_or_update_lead: {type(e).__name__}: {str(e)}")
         return {"success": False, "error": str(e)}
 
-ZONAS_GENERICAS = {
-    "", "cualquiera", "cualquier zona", "cualquier colonia", "cualquier lugar", "donde sea",
-    "todas", "todas las zonas", "no importa", "me da igual", "indistinto", "sin preferencia",
-    "ninguna", "ninguna zona",
-}
-
 def _normalizar_texto(texto: str) -> str:
-    sin_acentos = unicodedata.normalize("NFKD", texto)
+    sin_acentos = unicodedata.normalize("NFKD", str(texto))
     sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
     sin_puntuacion = "".join(" " if unicodedata.category(c).startswith("P") else c for c in sin_acentos)
     return " ".join(sin_puntuacion.lower().split())
+
+_ZONAS_GENERICAS_ES = [
+    "", "cualquiera", "cualquier zona", "cualquier colonia", "cualquier lugar", "donde sea",
+    "todas", "todas las zonas", "no importa", "me da igual", "indistinto", "sin preferencia",
+    "ninguna", "ninguna zona",
+]
+_ZONAS_GENERICAS_EN = [
+    "anywhere", "any area", "any neighborhood", "any zone", "any location", "no preference",
+    "doesn't matter", "does not matter", "all", "all areas", "anything", "whatever",
+]
+ZONAS_GENERICAS = {_normalizar_texto(z) for z in _ZONAS_GENERICAS_ES + _ZONAS_GENERICAS_EN}
+
+TIPOS_OPERACION = {
+    "renta": "Renta", "rent": "Renta", "rental": "Renta", "renting": "Renta",
+    "compra": "Compra", "buy": "Compra", "buying": "Compra", "purchase": "Compra",
+}
+TEMPERATURAS = {"hot": "hot", "warm": "warm", "cold": "cold"}
+IDIOMAS = {"english": "English", "ingles": "English", "spanish": "Spanish", "espanol": "Spanish"}
+
+def _normalizar_catalogo(valor, catalogo: dict, campo: str):
+    if valor is None or not _normalizar_texto(valor):
+        return None
+    resultado = catalogo.get(_normalizar_texto(valor))
+    if resultado is None:
+        logger.warning(f"⚠️ Valor no reconocido para {campo}: {valor!r}; no se escribe")
+    return resultado
+
+def normalizar_tipo(valor):
+    return _normalizar_catalogo(valor, TIPOS_OPERACION, "Tipo")
+
+def normalizar_temperatura(valor):
+    return _normalizar_catalogo(valor, TEMPERATURAS, "Temperatura")
+
+def normalizar_idioma(valor):
+    return _normalizar_catalogo(valor, IDIOMAS, "Idioma")
 
 def _zona_buscable(zona) -> bool:
     if not zona:
@@ -353,6 +397,8 @@ def search_properties(
                 "nombre": props.get("Name", {}).get("title", [{}])[0].get("text", {}).get("content", ""),
                 "ubicacion": props.get("Ubicación", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
                 "precio": props.get("Precio Mensual", {}).get("number"),
+                "moneda": (props.get("Moneda", {}).get("select") or {}).get("name") or "MXN",
+                "tipo": (props.get("Tipo de propiedad", {}).get("select") or {}).get("name"),
                 "recamaras": props.get("Recámaras", {}).get("number"),
                 "banos": props.get("Baños", {}).get("number"),
                 "m2": props.get("m²", {}).get("number"),

@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from services.anthropic_service import generate_call_summary, extract_call_metadata, resumen_es_valido
 from services.notion_service import (
     actualizar_resumen_llamada,
+    normalizar_idioma,
+    normalizar_temperatura,
+    normalizar_tipo,
     call_record_exists,
     create_call_record,
     create_or_update_lead,
@@ -77,7 +80,6 @@ def _telefono_del_lead(call: dict) -> str:
     return (call.get("to_number") if _es_outbound(call) else call.get("from_number")) or ""
 
 NOMBRES_INVALIDOS = {"", "Error", "Desconocido"}
-TEMPERATURAS_VALIDAS = {"hot", "warm", "cold"}
 RETELL_SIGNATURE_MODE = os.getenv("RETELL_SIGNATURE_MODE", "log").lower()
 
 def _nombre_valido(metadata: dict):
@@ -89,14 +91,9 @@ def _nombre_valido(metadata: dict):
 def _temperatura_valida(metadata: dict):
     if metadata.get("ok") is not True:
         return None
-    interes = metadata.get("interes")
-    return interes if interes in TEMPERATURAS_VALIDAS else None
-
-def _enum_valido(valor, validos: set):
-    return valor if valor in validos else None
+    return normalizar_temperatura(metadata.get("interes"))
 
 VALORES_SIN_DATO = {"", "no especificado", "no especificada", "desconocido", "desconocida", "n/a", "na", "none", "null", "sin dato"}
-TIPOS_OPERACION = {"renta", "compra"}
 resumenes_retell_pendientes = {}
 
 def _dato(valor):
@@ -178,14 +175,14 @@ def procesar_call_analyzed(call: dict):
     call_analysis = call.get("call_analysis") or {}
     analysis = call_analysis.get("custom_analysis_data") or {}
     resumen_retell = _dato(call_analysis.get("call_summary"))
-    tipo = (_dato(analysis.get("tipo_operacion")) or "").lower()
     datos = {
         "correo": _dato(analysis.get("correo")),
         "zona": _dato(analysis.get("zona")),
         "presupuesto": _dato(analysis.get("presupuesto")),
         "recamaras": _dato_numerico(analysis.get("recamaras")),
-        "tipo_operacion": tipo if tipo in TIPOS_OPERACION else None,
+        "tipo_operacion": normalizar_tipo(_dato(analysis.get("tipo_operacion"))),
         "propiedad_ofrecida": _dato(analysis.get("propiedad_ofrecida")),
+        "idioma": normalizar_idioma(_dato(analysis.get("idioma"))),
     }
 
     try:
@@ -193,7 +190,7 @@ def procesar_call_analyzed(call: dict):
             create_or_update_lead(
                 phone_number=phone_number,
                 name=_dato(analysis.get("nombre")),
-                temperatura=_enum_valido(analysis.get("temperatura"), TEMPERATURAS_VALIDAS),
+                temperatura=normalizar_temperatura(_dato(analysis.get("temperatura"))),
                 resumen_llamada=resumen_retell,
                 estatus=None if _es_outbound(call) else "En proceso",
                 call_id=call_id,
@@ -257,6 +254,19 @@ async def twilio_sms_webhook(request: Request):
 # Custom functions llamadas por Retell durante la llamada outbound (function calling)
 # ---------------------------------------------------------------------------
 
+def _describir_propiedad(p: dict) -> str:
+    nombre = f"{p['nombre']} ({p['tipo']})" if p.get("tipo") else p["nombre"]
+    partes = [f"{nombre} in {p['ubicacion']}"]
+    if p.get("precio") is not None:
+        partes.append(f"${p['precio']:,.0f} per month ({p.get('moneda') or 'MXN'})")
+    if p.get("recamaras") is not None:
+        n = int(p["recamaras"])
+        partes.append("studio" if n == 0 else f"{n} bedroom{'' if n == 1 else 's'}")
+    if p.get("banos") is not None:
+        b = p["banos"]
+        partes.append(f"{b:g} bath{'' if b == 1 else 's'}")
+    return ", ".join(partes)
+
 @app.post("/api/functions/search_properties")
 async def function_search_properties(request: Request):
     """Función custom de Retell: busca propiedades durante la llamada"""
@@ -273,20 +283,18 @@ async def function_search_properties(request: Request):
         )
 
         if not result.get("success"):
-            return {"result": "No pude consultar las propiedades en este momento."}
+            return {"result": "Listings are unavailable right now."}
 
         propiedades = result.get("propiedades", [])[:3]
         if not propiedades:
-            return {"result": "No encontré propiedades disponibles con esos criterios por ahora."}
+            return {"result": "No listings match those criteria."}
 
-        resumen = "; ".join(
-            f"{p['nombre']} en {p['ubicacion']}, ${p['precio']:,.0f} al mes, {int(p['recamaras'])} recámaras"
-            for p in propiedades
-        )
-        return {"result": f"Encontré estas opciones: {resumen}."}
+        descripciones = "; ".join(_describir_propiedad(p) for p in propiedades)
+        plural = "s" if len(propiedades) != 1 else ""
+        return {"result": f"Found {len(propiedades)} listing{plural}: {descripciones}."}
     except Exception as e:
         logger.error(f"❌ Error en function_search_properties: {str(e)}", exc_info=True)
-        return {"result": "Tuve un problema buscando propiedades, sigamos con la llamada."}
+        return {"result": "There was a problem searching listings. Let's continue the call."}
 
 @app.post("/api/functions/mark_lead_status")
 async def function_mark_lead_status(request: Request):
