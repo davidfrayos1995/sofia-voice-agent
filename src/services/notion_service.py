@@ -293,6 +293,36 @@ def _zona_buscable(zona) -> bool:
         return False
     return _normalizar_texto(zona) not in ZONAS_GENERICAS
 
+def zonas_con_propiedades(limite: int = 10) -> list:
+    """Zonas (primer segmento de Ubicación) con propiedades Disponible = Sí, de más a menos propiedades."""
+    db_id = os.getenv("NOTION_DATABASE_ID_PROPIEDADES")
+    filas, cursor = [], None
+    try:
+        while True:
+            body = {"filter": {"property": "Disponible", "select": {"equals": "Sí"}}, "page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            response = requests.post(f"{NOTION_API_URL}/databases/{db_id}/query", headers=get_notion_headers(), json=body)
+            if response.status_code != 200:
+                logger.warning(f"⚠️ No se pudieron listar zonas: HTTP {response.status_code}")
+                return []
+            data = response.json()
+            filas += data.get("results", [])
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+    except Exception as e:
+        logger.warning(f"⚠️ Error listando zonas: {type(e).__name__}: {str(e)}")
+        return []
+
+    conteo = {}
+    for fila in filas:
+        texto = "".join(x.get("plain_text", "") for x in fila["properties"].get("Ubicación", {}).get("rich_text", []))
+        zona = texto.split(",")[0].strip()
+        if zona:
+            conteo[zona] = conteo.get(zona, 0) + 1
+    return [z for z, _ in sorted(conteo.items(), key=lambda kv: (-kv[1], kv[0]))][:limite]
+
 def search_properties(
     ubicacion_filter: str = None,
     precio_max: int = None,

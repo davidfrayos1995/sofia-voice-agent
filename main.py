@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from services.anthropic_service import generate_call_summary, extract_call_metadata, resumen_es_valido
 from services.notion_service import (
+    _zona_buscable,
     actualizar_resumen_llamada,
     normalizar_idioma,
     normalizar_temperatura,
@@ -28,6 +29,7 @@ from services.notion_service import (
     create_or_update_lead,
     search_properties,
     update_lead_status_by_phone,
+    zonas_con_propiedades,
 )
 from worker import process_pending_leads
 
@@ -254,6 +256,10 @@ async def twilio_sms_webhook(request: Request):
 # Custom functions llamadas por Retell durante la llamada outbound (function calling)
 # ---------------------------------------------------------------------------
 
+def _texto_zonas() -> str:
+    zonas = zonas_con_propiedades()
+    return ", ".join(zonas) if zonas else "none right now"
+
 def _describir_propiedad(p: dict) -> str:
     nombre = f"{p['nombre']} ({p['tipo']})" if p.get("tipo") else p["nombre"]
     partes = [f"{nombre} in {p['ubicacion']}"]
@@ -285,9 +291,13 @@ async def function_search_properties(request: Request):
         if not result.get("success"):
             return {"result": "Listings are unavailable right now."}
 
+        zona_pedida = args.get("ubicacion_filter")
+        buscando_zona = _zona_buscable(zona_pedida)
         todas = result.get("propiedades", [])
         if not todas:
-            return {"result": "No listings match those criteria."}
+            if buscando_zona:
+                return {"result": f"No listings found in '{zona_pedida}'. Areas with listings: {_texto_zonas()}."}
+            return {"result": f"No listings match those criteria. Areas with listings: {_texto_zonas()}."}
 
         por_precio = sorted(todas, key=lambda p: (p.get("precio") is None, p.get("precio") or 0))
         mostradas = por_precio[:3]
@@ -296,7 +306,10 @@ async def function_search_properties(request: Request):
             encabezado = f"Found {len(todas)} listings; showing {len(mostradas)}"
         else:
             encabezado = f"Found {len(todas)} listing{'' if len(todas) == 1 else 's'}"
-        return {"result": f"{encabezado}: {descripciones}."}
+        texto = f"{encabezado}: {descripciones}."
+        if not buscando_zona:
+            texto += f" Areas with listings: {_texto_zonas()}."
+        return {"result": texto}
     except Exception as e:
         logger.error(f"❌ Error en function_search_properties: {str(e)}", exc_info=True)
         return {"result": "There was a problem searching listings. Let's continue the call."}

@@ -60,12 +60,47 @@ class RespuestaBusquedaTest(unittest.TestCase):
     def setUp(self):
         self.cliente = TestClient(main.app)
 
-    def llamar(self, resultado):
-        with patch("main.search_properties", return_value=resultado):
-            return self.cliente.post("/api/functions/search_properties", json={"args": {"ubicacion_filter": "x", "precio_max": 3000}}).json()["result"]
+    ZONAS = ["Brickell", "Kissimmee"]
+
+    def llamar(self, resultado, args=None):
+        args = args if args is not None else {"ubicacion_filter": "x", "precio_max": 3000}
+        with patch("main.search_properties", return_value=resultado), patch("main.zonas_con_propiedades", return_value=self.ZONAS):
+            return self.cliente.post("/api/functions/search_properties", json={"args": args}).json()["result"]
 
     def test_sin_resultados(self):
-        self.assertEqual(self.llamar({"success": True, "propiedades": []}), "No listings match those criteria.")
+        self.assertEqual(self.llamar({"success": True, "propiedades": []}),
+                         "No listings found in 'x'. Areas with listings: Brickell, Kissimmee.")
+
+    def test_sin_resultados_sin_zona_lista_areas(self):
+        self.assertEqual(self.llamar({"success": True, "propiedades": []}, {"precio_max": 1000}),
+                         "No listings match those criteria. Areas with listings: Brickell, Kissimmee.")
+
+    def test_zona_generica_sin_resultados_lista_areas(self):
+        self.assertEqual(self.llamar({"success": True, "propiedades": []}, {"ubicacion_filter": "anywhere", "precio_max": 1000}),
+                         "No listings match those criteria. Areas with listings: Brickell, Kissimmee.")
+
+    def test_sin_zona_con_resultados_agrega_areas_al_final(self):
+        prop = {"nombre": "Casa Y", "ubicacion": "Kissimmee", "precio": 2900, "moneda": "USD", "recamaras": 3, "banos": 2, "tipo": None}
+        self.assertEqual(self.llamar({"success": True, "propiedades": [prop]}, {"precio_max": 3000}),
+                         "Found 1 listing: Casa Y in Kissimmee, $2,900 per month (USD), 3 bedrooms, 2 baths. Areas with listings: Brickell, Kissimmee.")
+
+    def test_con_zona_y_resultados_no_agrega_areas(self):
+        prop = {"nombre": "Casa Y", "ubicacion": "Kissimmee", "precio": 2900, "moneda": "USD", "recamaras": 3, "banos": 2, "tipo": None}
+        self.assertNotIn("Areas with listings", self.llamar({"success": True, "propiedades": [prop]}, {"ubicacion_filter": "Kissimmee"}))
+
+    def test_zonas_con_propiedades_cuenta_ordena_y_limita(self):
+        from unittest.mock import MagicMock
+        def fila(ubic):
+            return {"properties": {"Ubicación": {"rich_text": [{"plain_text": ubic}]}}}
+        filas = [fila("Brickell, Miami")] * 2 + [fila("Kissimmee, Orlando")] + [fila(f"Zona{i:02d}, Miami") for i in range(12)] + [fila("  , Miami")]
+        respuesta = MagicMock(status_code=200)
+        respuesta.json.return_value = {"results": filas, "has_more": False}
+        with patch.object(ns.requests, "post", return_value=respuesta):
+            zonas = ns.zonas_con_propiedades()
+        self.assertEqual(zonas[0], "Brickell")
+        self.assertEqual(len(zonas), 10)
+        self.assertEqual(len(set(zonas)), 10)
+        self.assertNotIn("", zonas)
 
     def test_un_resultado_en_ingles_con_moneda(self):
         propiedad = {"nombre": "Studio Miami Beach", "ubicacion": "Miami Beach", "precio": 2500, "moneda": "USD",
