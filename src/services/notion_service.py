@@ -293,7 +293,7 @@ def _zona_buscable(zona) -> bool:
         return False
     return _normalizar_texto(zona) not in ZONAS_GENERICAS
 
-def zonas_con_propiedades(limite: int = 10) -> list:
+def zonas_con_propiedades(limite: int = 20) -> list:
     """Zonas (primer segmento de Ubicación) con propiedades Disponible = Sí, de más a menos propiedades."""
     db_id = os.getenv("NOTION_DATABASE_ID_PROPIEDADES")
     filas, cursor = [], None

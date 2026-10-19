@@ -92,14 +92,14 @@ class RespuestaBusquedaTest(unittest.TestCase):
         from unittest.mock import MagicMock
         def fila(ubic):
             return {"properties": {"Ubicación": {"rich_text": [{"plain_text": ubic}]}}}
-        filas = [fila("Brickell, Miami")] * 2 + [fila("Kissimmee, Orlando")] + [fila(f"Zona{i:02d}, Miami") for i in range(12)] + [fila("  , Miami")]
+        filas = [fila("Brickell, Miami")] * 2 + [fila("Kissimmee, Orlando")] + [fila(f"Zona{i:02d}, Miami") for i in range(25)] + [fila("  , Miami")]
         respuesta = MagicMock(status_code=200)
         respuesta.json.return_value = {"results": filas, "has_more": False}
         with patch.object(ns.requests, "post", return_value=respuesta):
             zonas = ns.zonas_con_propiedades()
         self.assertEqual(zonas[0], "Brickell")
-        self.assertEqual(len(zonas), 10)
-        self.assertEqual(len(set(zonas)), 10)
+        self.assertEqual(len(zonas), 20)
+        self.assertEqual(len(set(zonas)), 20)
         self.assertNotIn("", zonas)
 
     def test_un_resultado_en_ingles_con_moneda(self):
